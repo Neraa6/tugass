@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Finance = require('../models/financeModel');
 
 // ============================
@@ -16,10 +17,18 @@ const getFinances = async (req, res) => {
 // CREATE finance baru
 // ============================
 const createFinance = async (req, res) => {
-  const { title, amount, type } = req.body;
+  const { title, amount, type, category } = req.body;
 
-  if (!title || !amount || !type) {
+  if (!title || !amount || !type || !category) {
     return res.status(400).json({ message: 'Semua field harus diisi' });
+  }
+
+  if (!['income', 'expense'].includes(type)) {
+    return res.status(400).json({ message: 'Tipe harus income atau expense' });
+  }
+
+  if (!['salary', 'education', 'health', 'food', 'transportation', 'entertainment', 'utilities', 'others'].includes(category)) {
+    return res.status(400).json({ message: 'Kategori tidak valid' });
   }
 
   try {
@@ -28,6 +37,7 @@ const createFinance = async (req, res) => {
       title,
       amount,
       type,
+      category,
     });
 
     res.status(201).json(finance);
@@ -80,31 +90,45 @@ const deleteFinance = async (req, res) => {
 };
 
 // ============================
-// FILTER finance (type, month, year)
+// FILTER finance (ADVANCED)
 // ============================
 const filterFinance = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const { type, month, year } = req.query;
+    const userId = req.user.id || req.user._id;
+
+    const {
+      type, month, year, keyword, category,
+      minAmount, maxAmount, startDate, endDate
+    } = req.query;
 
     let query = { user: userId };
 
-    // Filter by type
-    if (type) {
-      query.type = type;
+    if (type) query.type = type;
+
+    if (minAmount || maxAmount) {
+      query.amount = {};
+      if (minAmount) query.amount.$gte = Number(minAmount);
+      if (maxAmount) query.amount.$lte = Number(maxAmount);
     }
 
-    // Filter by year
+    if (category) query.category = category;
+
+    if (keyword) {
+      query.$or = [
+        { title: { $regex: keyword, $options: 'i' } },
+        { category: { $regex: keyword, $options: 'i' } },
+      ];
+    }
+
+    let dateFilter = {};
+
     if (year) {
-      const startOfYear = new Date(`${year}-01-01T00:00:00.000Z`);
-      const endOfYear = new Date(`${Number(year) + 1}-01-01T00:00:00.000Z`);
-      query.createdAt = { $gte: startOfYear, $lt: endOfYear };
+      dateFilter.$gte = new Date(`${year}-01-01T00:00:00.000Z`);
+      dateFilter.$lt = new Date(`${Number(year) + 1}-01-01T00:00:00.000Z`);
     }
 
-    // Filter by month
     if (month) {
       const yearValue = year || new Date().getFullYear();
-
       const monthStart = new Date(`${yearValue}-${String(month).padStart(2, '0')}-01T00:00:00.000Z`);
       const nextMonth = Number(month) + 1;
 
@@ -112,7 +136,17 @@ const filterFinance = async (req, res) => {
         ? new Date(`${Number(yearValue) + 1}-01-01T00:00:00.000Z`)
         : new Date(`${yearValue}-${String(nextMonth).padStart(2, '0')}-01T00:00:00.000Z`);
 
-      query.createdAt = { $gte: monthStart, $lt: monthEnd };
+      dateFilter.$gte = monthStart;
+      dateFilter.$lt = monthEnd;
+    }
+
+    if (startDate || endDate) {
+      if (startDate) dateFilter.$gte = new Date(startDate);
+      if (endDate) dateFilter.$lte = new Date(endDate);
+    }
+
+    if (Object.keys(dateFilter).length > 0) {
+      query.createdAt = dateFilter;
     }
 
     const finances = await Finance.find(query).sort({ createdAt: -1 });
@@ -124,31 +158,133 @@ const filterFinance = async (req, res) => {
 };
 
 // ============================
-// SUMMARY (Income, Expense, Balance)
+// SUMMARY TOTAL
 // ============================
 const getFinanceSummary = async (req, res) => {
   try {
     const userId = req.user.id;
-
     const finances = await Finance.find({ user: userId });
 
-    const totalIncome = finances
-      .filter(item => item.type === 'income')
-      .reduce((sum, item) => sum + item.amount, 0);
-
-    const totalExpense = finances
-      .filter(item => item.type === 'expense')
-      .reduce((sum, item) => sum + item.amount, 0);
-
-    const balance = totalIncome - totalExpense;
+    const totalIncome = finances.filter(i => i.type === 'income').reduce((a, b) => a + b.amount, 0);
+    const totalExpense = finances.filter(i => i.type === 'expense').reduce((a, b) => a + b.amount, 0);
 
     res.status(200).json({
       totalIncome,
       totalExpense,
-      balance,
+      balance: totalIncome - totalExpense,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// ============================
+// CATEGORY STATS
+// ============================
+const getCategoryStats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const stats = await Finance.aggregate([
+      { $match: { user: new mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: { $ifNull: ['$category', 'uncategorized'] },
+          total: { $sum: '$amount' },
+        },
+      },
+      { $sort: { total: -1 } }
+    ]);
+
+    res.status(200).json(stats);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ============================
+// MONTHLY STATS
+// ============================
+const getMonthlyStats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { year } = req.query;
+
+    if (!year) {
+      return res.status(400).json({ message: 'Tahun harus disertakan.' });
+    }
+
+    const startOfYear = new Date(`${year}-01-01T00:00:00.000Z`);
+    const endOfYear = new Date(`${Number(year) + 1}-01-01T00:00:00.000Z`);
+
+    const finances = await Finance.find({
+      user: userId,
+      createdAt: { $gte: startOfYear, $lt: endOfYear },
+    });
+
+    const monthlyStats = Array.from({ length: 12 }, (_, i) => ({
+      month: i + 1,
+      totalIncome: 0,
+      totalExpense: 0,
+      balance: 0,
+    }));
+
+    finances.forEach((item) => {
+      const monthIndex = item.createdAt.getUTCMonth();
+
+      if (item.type === 'income') monthlyStats[monthIndex].totalIncome += item.amount;
+      if (item.type === 'expense') monthlyStats[monthIndex].totalExpense += item.amount;
+
+      monthlyStats[monthIndex].balance =
+        monthlyStats[monthIndex].totalIncome - monthlyStats[monthIndex].totalExpense;
+    });
+
+    res.status(200).json(monthlyStats);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ============================
+// REPORT BY PERIOD (BARU)
+// ============================
+const getFinanceReportByPeriod = async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal mulai dan akhir harus diisi' });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({ message: 'Format tanggal tidak valid' });
+    }
+
+    if (start > end) {
+      return res.status(400).json({ message: 'Tanggal mulai harus sebelum tanggal akhir' });
+    }
+
+    const finances = await Finance.find({
+      user: userId,
+      createdAt: { $gte: start, $lte: end },
+    });
+
+    const totalIncome = finances.filter(i => i.type === 'income').reduce((a, b) => a + b.amount, 0);
+    const totalExpense = finances.filter(i => i.type === 'expense').reduce((a, b) => a + b.amount, 0);
+
+    res.status(200).json({
+      startDate,
+      endDate,
+      totalIncome,
+      totalExpense,
+      balance: totalIncome - totalExpense,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Terjadi kesalahan server' });
   }
 };
 
@@ -162,4 +298,7 @@ module.exports = {
   deleteFinance,
   filterFinance,
   getFinanceSummary,
+  getCategoryStats,
+  getMonthlyStats,
+  getFinanceReportByPeriod, // ✅ BARU
 };

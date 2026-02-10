@@ -1,7 +1,9 @@
-// Import express, middleware, dan controller
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { getMonthlyStats } = require('../controllers/financeController');
+const { getFinanceReportByPeriod } = require('../controllers/financeController')
+
 const {
   getFinances,
   createFinance,
@@ -9,24 +11,28 @@ const {
   deleteFinance,
   getFinanceSummary,
   filterFinance,
+  getCategoryStats,
 } = require('../controllers/financeController');
 
-// Route untuk mendapatkan semua data finance
-router.get('/', protect, getFinances);
-
-// Route untuk membuat data finance baru
-router.post('/', protect, createFinance);
-
-// Route untuk mengupdate data finance
-router.put('/:id', protect, updateFinance);
-
-// Route untuk menghapus data finance
-router.delete('/:id', protect, deleteFinance);
-
-// Route untuk mendapatkan summary finance
+// ============================
+// EXTRA FEATURES (STATIC FIRST)
+// ============================
 router.get('/summary', protect, getFinanceSummary);
-
-// Route untuk filter data finance
 router.get('/filter', protect, filterFinance);
+router.get('/category-stats', protect, getCategoryStats);
+router.get('/monthly-stats', protect, getMonthlyStats);
+router.get('/report', protect, getFinanceReportByPeriod);
+
+
+// ============================
+// MAIN CRUD ROUTES
+// ============================
+router.route('/')
+  .get(protect, getFinances)
+  .post(protect, createFinance);
+
+router.route('/:id')
+  .put(protect, updateFinance)
+  .delete(protect, deleteFinance);
 
 module.exports = router;
